@@ -147,27 +147,25 @@ def fill_search(page: Page, lookback_days: int) -> None:
     except PWTimeout:
         pass
 
-    # Try several length-selector strategies. Senate EFD uses DataTables; the
-    # select name pattern depends on the table id.
+    # Use DataTables JS API to show all rows in a single page (no pagination needed).
+    # The page-length dropdown alone doesn't reliably trigger a redraw on Senate EFD.
     try:
-        page.evaluate("""() => {
-            const candidates = document.querySelectorAll('select');
-            for (const sel of candidates) {
-                if (sel.name && sel.name.endsWith('_length')) {
-                    // Prefer 100, fall back to highest available.
-                    const opts = Array.from(sel.options).map(o => parseInt(o.value)).filter(n => n>0);
-                    const target = opts.includes(100) ? 100 : Math.max(...opts);
-                    sel.value = String(target);
-                    sel.dispatchEvent(new Event('change', {bubbles: true}));
-                    console.log('Set page length to', target, 'on', sel.name);
-                    return;
-                }
-            }
-            console.log('No length selector found among', candidates.length, 'selects');
+        result = page.evaluate("""() => {
+            const $ = window.jQuery || window.$;
+            if (!$ || !$.fn || !$.fn.dataTable) return 'no jQuery DataTables';
+            const tables = $('table.dataTable');
+            if (!tables.length) return 'no dataTable on page';
+            const dt = tables.first().DataTable();
+            const total = dt.page.info().recordsTotal;
+            dt.page.len(Math.max(total, 500)).draw(false);
+            return `set length to ${Math.max(total, 500)}, total=${total}`;
         }""")
-        page.wait_for_load_state("networkidle", timeout=5_000)
+        log.info("DataTables tweak: %s", result)
+        # Wait for redraw to settle (AJAX completes).
+        page.wait_for_load_state("networkidle", timeout=10_000)
+        time.sleep(2)
     except Exception as e:
-        log.warning("Length selector tweak failed: %s", e)
+        log.warning("DataTables tweak failed: %s", e)
 
 
 def _diag_page_structure(page: Page) -> None:
