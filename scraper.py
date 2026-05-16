@@ -170,6 +170,28 @@ def fill_search(page: Page, lookback_days: int) -> None:
         log.warning("Length selector tweak failed: %s", e)
 
 
+def _diag_page_structure(page: Page) -> None:
+    """One-time logging of page structure to help debug pagination issues."""
+    try:
+        info = page.evaluate("""() => {
+            const selects = Array.from(document.querySelectorAll('select')).map(s => ({
+                name: s.name, id: s.id, value: s.value,
+                options: Array.from(s.options).map(o => o.value),
+            }));
+            const tables = Array.from(document.querySelectorAll('table')).map(t => ({
+                id: t.id, classes: t.className, rowCount: t.querySelectorAll('tbody tr').length
+            }));
+            const paginate = Array.from(document.querySelectorAll('.dataTables_paginate, .pagination, [class*=page]')).map(p => ({
+                tag: p.tagName, classes: p.className, html: p.outerHTML.slice(0, 200)
+            }));
+            const info = document.querySelector('.dataTables_info')?.textContent || null;
+            return {selects, tables, paginate, info};
+        }""")
+        log.info("PAGE STRUCTURE: %s", json.dumps(info, indent=2)[:3000])
+    except Exception as e:
+        log.warning("Diag failed: %s", e)
+
+
 def collect_report_urls(page: Page, max_pages: int = 50) -> list[dict]:
     """Iterate result table pages and return rows with metadata + URL.
 
@@ -184,6 +206,7 @@ def collect_report_urls(page: Page, max_pages: int = 50) -> list[dict]:
         rows = page.locator("tbody tr").all()
         log.info("Page %d: %d rows", pages_seen, len(rows))
         if rows and pages_seen == 1:
+            _diag_page_structure(page)
             first_cells = rows[0].locator("td").all()
             first_text = (rows[0].text_content() or "").strip().replace("\n", " | ")
             log.info("  first row: %d cells, text=%r", len(first_cells), first_text[:300])
