@@ -23,7 +23,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlparse, parse_qs
 
 import requests
@@ -137,7 +137,7 @@ def fill_search(page: Page, lookback_days: int) -> None:
     if not ptr_cb.is_checked():
         ptr_cb.check()
 
-    from_date = (datetime.utcnow() - timedelta(days=lookback_days)).strftime("%m/%d/%Y")
+    from_date = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=lookback_days)).strftime("%m/%d/%Y")
     page.locator("#fromDate").fill(from_date)
     log.info("From date: %s", from_date)
 
@@ -159,32 +159,51 @@ def fill_search(page: Page, lookback_days: int) -> None:
 
 
 def collect_report_urls(page: Page, max_pages: int = 10) -> list[dict]:
-    """Iterate result table pages and return rows with {filer, type, date, url}."""
+    """Iterate result table pages and return rows with metadata + URL.
+
+    Senate EFD column layout has shifted historically. We extract the first
+    <a href> we find anywhere in the row (the filing link) and capture all cell
+    texts; the server-side mapper can refine fields from there.
+    """
     out: list[dict] = []
     pages_seen = 0
     while pages_seen < max_pages:
         pages_seen += 1
-        rows = page.locator("table#filedReports tbody tr").all()
+        rows = page.locator("tbody tr").all()
         log.info("Page %d: %d rows", pages_seen, len(rows))
-        if not rows or "No data available" in (rows[0].text_content() or ""):
+        if rows and pages_seen == 1:
+            first_cells = rows[0].locator("td").all()
+            first_text = (rows[0].text_content() or "").strip().replace("\n", " | ")
+            log.info("  first row: %d cells, text=%r", len(first_cells), first_text[:300])
+            anchors = rows[0].locator("a").all()
+            log.info("  first row anchors: %d", len(anchors))
+            for i, a in enumerate(anchors[:3]):
+                log.info("    anchor[%d] href=%r text=%r", i, a.get_attribute("href"), (a.text_content() or "").strip()[:80])
+        if not rows:
+            break
+        if any(s in (rows[0].text_content() or "").lower() for s in ("no data available", "no results found")):
             break
 
         for row in rows:
             cells = row.locator("td").all()
-            if len(cells) < 6:
+            if len(cells) < 2:
                 continue
-            link = cells[3].locator("a")
-            href = link.get_attribute("href") if link.count() else None
+            link = row.locator("a").first
+            if link.count() == 0:
+                continue
+            href = link.get_attribute("href")
             if not href:
                 continue
             full_url = urljoin(BASE_URL, href)
+            texts = [(c.text_content() or "").strip() for c in cells]
             out.append({
-                "first": (cells[0].text_content() or "").strip(),
-                "last": (cells[1].text_content() or "").strip(),
-                "office": (cells[2].text_content() or "").strip(),
-                "title": (cells[3].text_content() or "").strip(),
-                "report_type": (cells[4].text_content() or "").strip(),
-                "filed_date": (cells[5].text_content() or "").strip(),
+                "first": texts[0] if len(texts) > 0 else "",
+                "last": texts[1] if len(texts) > 1 else "",
+                "office": texts[2] if len(texts) > 2 else "",
+                "title": (link.text_content() or "").strip(),
+                "report_type": texts[3] if len(texts) > 3 else "",
+                "filed_date": texts[-1] if texts else "",
+                "cells_raw": texts,
                 "url": full_url,
             })
 
