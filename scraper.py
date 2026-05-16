@@ -147,18 +147,30 @@ def fill_search(page: Page, lookback_days: int) -> None:
     except PWTimeout:
         pass
 
-    # Try to set DataTables length to 100 so we paginate less.
+    # Try several length-selector strategies. Senate EFD uses DataTables; the
+    # select name pattern depends on the table id.
     try:
-        page.evaluate(
-            "() => { const sel = document.querySelector('select[name=\"filedReports_length\"]'); "
-            "if (sel) { sel.value = '100'; sel.dispatchEvent(new Event('change')); } }"
-        )
+        page.evaluate("""() => {
+            const candidates = document.querySelectorAll('select');
+            for (const sel of candidates) {
+                if (sel.name && sel.name.endsWith('_length')) {
+                    // Prefer 100, fall back to highest available.
+                    const opts = Array.from(sel.options).map(o => parseInt(o.value)).filter(n => n>0);
+                    const target = opts.includes(100) ? 100 : Math.max(...opts);
+                    sel.value = String(target);
+                    sel.dispatchEvent(new Event('change', {bubbles: true}));
+                    console.log('Set page length to', target, 'on', sel.name);
+                    return;
+                }
+            }
+            console.log('No length selector found among', candidates.length, 'selects');
+        }""")
         page.wait_for_load_state("networkidle", timeout=5_000)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Length selector tweak failed: %s", e)
 
 
-def collect_report_urls(page: Page, max_pages: int = 10) -> list[dict]:
+def collect_report_urls(page: Page, max_pages: int = 50) -> list[dict]:
     """Iterate result table pages and return rows with metadata + URL.
 
     Senate EFD column layout has shifted historically. We extract the first
@@ -207,15 +219,28 @@ def collect_report_urls(page: Page, max_pages: int = 10) -> list[dict]:
                 "url": full_url,
             })
 
-        # Pagination
-        nxt = page.locator("a.paginate_button.next:not(.disabled)")
-        if nxt.count() == 0:
-            break
-        try:
-            nxt.first.click()
-            page.wait_for_load_state("networkidle", timeout=10_000)
-            time.sleep(1)
-        except Exception:
+        # Pagination — try multiple selector variants (DataTables versions differ).
+        next_selectors = [
+            "a.paginate_button.next:not(.disabled)",
+            "li.paginate_button.next:not(.disabled) a",
+            ".dataTables_paginate .paginate_button.next:not(.disabled)",
+            "[aria-label='Next']:not(.disabled)",
+        ]
+        clicked = False
+        for sel in next_selectors:
+            nxt = page.locator(sel)
+            if nxt.count() == 0:
+                continue
+            try:
+                nxt.first.click()
+                page.wait_for_load_state("networkidle", timeout=10_000)
+                time.sleep(1.5)
+                clicked = True
+                break
+            except Exception as e:
+                log.debug("Next click via %s failed: %s", sel, e)
+        if not clicked:
+            log.info("No more pages (no clickable Next found)")
             break
     log.info("Collected %d total filings across %d pages", len(out), pages_seen)
     return out
