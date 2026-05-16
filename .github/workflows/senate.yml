@@ -1,0 +1,45 @@
+name: senate-scrape
+
+on:
+  schedule:
+    # Every 15 minutes. GitHub may delay during high load; treat as best-effort.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "Backfill window (days)"
+        required: false
+        default: "30"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: senate-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run scraper
+        env:
+          INGEST_URL: ${{ secrets.INGEST_URL }}
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+          LOOKBACK_DAYS: ${{ inputs.lookback_days || '7' }}
+          HEADLESS: "true"
+        run: python scraper.py
