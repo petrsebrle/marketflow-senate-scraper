@@ -111,14 +111,19 @@ def setup(pw: Playwright):
 
 
 def accept_agreement(page: Page) -> None:
+    """Click the agreement checkbox; the page auto-submits and reloads with the
+    search form. We can't verify post-state of the original element because the
+    DOM gets replaced, so we use click() (no verification) and wait for a
+    next-page selector instead of networkidle.
+    """
     log.info("Navigating to %s", BASE_URL)
     page.goto(BASE_URL, wait_until="domcontentloaded")
     cb = page.locator("#agree_statement")
     cb.wait_for(state="visible", timeout=TIMEOUT)
-    if not cb.is_checked():
-        cb.check()
-    log.info("Accepted agreement")
-    page.wait_for_load_state("networkidle", timeout=TIMEOUT)
+    cb.click()
+    log.info("Clicked agreement; waiting for search form")
+    page.wait_for_selector("input[id='reportTypes'][value='11']", timeout=TIMEOUT)
+    log.info("Search form loaded")
 
 
 def fill_search(page: Page, lookback_days: int) -> None:
