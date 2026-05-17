@@ -361,8 +361,7 @@ def _norm_tx_type(s: str) -> str | None:
         return "buy"
     if "sale" in s or "sell" in s:
         return "sell"
-    if "exchange" in s:
-        return "exchange"
+    # 'exchange' tx_type dropped 2026-05-17 — corporate actions have no trading signal.
     return None
 
 
