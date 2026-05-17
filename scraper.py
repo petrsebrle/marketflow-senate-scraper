@@ -331,7 +331,7 @@ def _make_filing(meta: dict, rows: list[dict]) -> dict:
         "filer_name": f"{meta.get('first', '')} {meta.get('last', '')}".strip(),
         "last_name": meta.get("last") or None,
         "state": meta.get("office") or None,  # column is "Office (StateDst)"; refined by server
-        "notify_date": _norm_date(meta.get("filed_date", "")),
+        "disclosed_date": _norm_date(meta.get("filed_date", "")),
         "report_type": meta.get("report_type"),
         "rows": rows,
     }
