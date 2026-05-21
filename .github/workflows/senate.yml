@@ -2,8 +2,8 @@ name: senate-scrape
 
 on:
   schedule:
-    # Every 15 minutes. GitHub may delay during high load; treat as best-effort.
-    - cron: "*/15 * * * *"
+    # Every 10 minutes. GitHub may delay during high load; treat as best-effort.
+    - cron: "*/10 * * * *"
   workflow_dispatch:
     inputs:
       lookback_days:
@@ -33,11 +33,27 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install dependencies
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          playwright install --with-deps chromium
+
+      - name: Install Playwright chromium (cache miss)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: playwright install --with-deps chromium
+
+      - name: Install Playwright system deps (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: playwright install-deps chromium
 
       - name: Run scraper
         env:
