@@ -1,0 +1,141 @@
+name: senate-scrape-retry
+
+# Hlídá běhy "senate-scrape" a rozlišuje dvě zcela různé věci:
+#
+#   1. INFRA — job umře dřív, než se spustí jediný náš krok (typicky
+#      "Failed to resolve action download info" v "Set up job"), nebo ho
+#      GitHub uprostřed výpadku zruší. Náš kód se vůbec nespustil.
+#      → jeden automatický rerun + zpráva na Telegram
+#
+#   2. KÓD — spadl skutečný krok (scraper, pip, playwright).
+#      → žádný rerun, jen zpráva na Telegram
+#
+# Workflow schválně nepoužívá ŽÁDNOU externí akci, ani actions/checkout:
+# nedostupnost, kvůli které existuje, se projevuje právě tím, že se akce
+# nedají stáhnout. Co si nic nestahuje, to výpadek přežije.
+
+on:
+  workflow_run:
+    workflows: ["senate-scrape"]
+    types: [completed]
+
+permissions:
+  actions: write # rerun-failed-jobs
+
+jobs:
+  triage:
+    # run_attempt == 1 je pojistka proti smyčce: rerun vyrobí attempt 2,
+    # jehož dokončení sem přijde znovu — a tady se už zastaví.
+    if: >-
+      github.event.workflow_run.conclusion != 'success'
+      && github.event.workflow_run.conclusion != 'skipped'
+      && github.event.workflow_run.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Rozliš infra selhání od chyby scraperu
+        id: triage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          jobs_json=$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100")
+
+          # Kroky, které fakt spadly. "Set up job" generuje runner sám
+          # a jeho selhání znamená právě to, že se náš kód nespustil.
+          real=$(printf '%s' "$jobs_json" | jq -r '
+            [ .jobs[].steps[]?
+              | select(.conclusion == "failure")
+              | select(.name != "Set up job")
+              | .name ] | join(", ")')
+
+          # Přehled kroků do zprávy (prázdný = job neudělal vůbec nic).
+          steps_seen=$(printf '%s' "$jobs_json" | jq -r '
+            [ .jobs[].steps[]? | "\(.name)=\(.conclusion // "null")" ] | join(", ")')
+
+          if [ -z "$real" ]; then
+            echo "kind=infra" >> "$GITHUB_OUTPUT"
+            echo "detail=žádný náš krok nespadl (job skončil dřív, než se rozjel)" >> "$GITHUB_OUTPUT"
+          else
+            echo "kind=code" >> "$GITHUB_OUTPUT"
+            echo "detail=spadlé kroky: $real" >> "$GITHUB_OUTPUT"
+          fi
+          echo "steps=${steps_seen:-<žádné kroky nezaznamenány>}" >> "$GITHUB_OUTPUT"
+
+      - name: Zjisti stav GitHub Actions
+        id: ghstatus
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          s=$(curl -sS --max-time 20 https://www.githubstatus.com/api/v2/summary.json \
+              | jq -r '[.components[] | select(.name=="Actions") | .status] | first // "unknown"')
+          echo "actions=${s:-unknown}" >> "$GITHUB_OUTPUT"
+
+      # Během probíhajícího výpadku je okamžitý rerun skoro jistě k ničemu —
+      # chvíli počkat výrazně zvedá šanci, že projde napoprvé.
+      - name: Počkej, než se to usadí
+        if: steps.triage.outputs.kind == 'infra'
+        run: sleep 120
+
+      - name: Spusť běh znovu
+        id: rerun
+        if: steps.triage.outputs.kind == 'infra'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -uo pipefail
+          if gh api -X POST "repos/$REPO/actions/runs/$RUN_ID/rerun-failed-jobs"; then
+            echo "result=spuštěn rerun (attempt 2)" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=⚠️ rerun se nepodařilo spustit (Actions API nedostupné)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pošli zprávu na Telegram
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KIND: ${{ steps.triage.outputs.kind }}
+          DETAIL: ${{ steps.triage.outputs.detail }}
+          STEPS: ${{ steps.triage.outputs.steps }}
+          RERUN: ${{ steps.rerun.outputs.result }}
+          GH_ACTIONS_STATUS: ${{ steps.ghstatus.outputs.actions }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -uo pipefail
+
+          if [ "${KIND:-}" = "infra" ]; then
+            head="🔧 <b>senate-scrape #${RUN_NUMBER}</b> — výpadek infrastruktury"
+            tail=$'Náš kód se nespustil, data se neztrácejí (7denní lookback + dedup na serveru).\n<b>Akce:</b> '"${RERUN:-nespuštěn}"
+          elif [ "${KIND:-}" = "code" ]; then
+            head="🐛 <b>senate-scrape #${RUN_NUMBER}</b> — spadl scraper"
+            tail="Tohle je skutečná chyba, rerun schválně NEproběhl. Potřebuje ruční zásah."
+          else
+            head="❓ <b>senate-scrape #${RUN_NUMBER}</b> — triage selhala"
+            tail="Nepodařilo se zjistit příčinu (nejspíš nedostupné Actions API)."
+          fi
+
+          text=$(printf '%s\n\n<b>Výsledek:</b> %s\n<b>Příčina:</b> %s\n<b>Kroky:</b> %s\n<b>GitHub Actions:</b> %s\n\n%s\n\n<a href="%s">Otevřít běh na GitHubu</a>' \
+            "$head" \
+            "${CONCLUSION:-?}" \
+            "${DETAIL:-neurčena}" \
+            "${STEPS:-neznámé}" \
+            "${GH_ACTIONS_STATUS:-unknown}" \
+            "$tail" \
+            "$RUN_URL")
+
+          curl -sS --max-time 30 -o /dev/null -w 'telegram HTTP %{http_code}\n' \
+            -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode=HTML \
+            -d disable_web_page_preview=true \
+            --data-urlencode text="${text}"
