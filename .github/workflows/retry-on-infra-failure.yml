@@ -1,18 +1,21 @@
 name: senate-scrape-retry
 
-# Hlídá běhy "senate-scrape" a rozlišuje dvě zcela různé věci:
+# Když "senate-scrape" spadne na infrastruktuře (job umře dřív, než se spustí
+# jediný náš krok — typicky "Failed to resolve action download info" v
+# "Set up job", nebo ho GitHub uprostřed výpadku zruší), zkusí ho jednou
+# spustit znovu. Spadl-li skutečný krok, je to chyba scraperu a rerun se
+# schválně nedělá.
 #
-#   1. INFRA — job umře dřív, než se spustí jediný náš krok (typicky
-#      "Failed to resolve action download info" v "Set up job"), nebo ho
-#      GitHub uprostřed výpadku zruší. Náš kód se vůbec nespustil.
-#      → jeden automatický rerun + zpráva na Telegram
+# NOTIFIKACE TADY NEJSOU, a je to schválně. Původně tu byly a 6. 8. 2026 se
+# ukázalo, proč to nefunguje: při výpadku se toho dne nedal přidělit runner,
+# takže i tenhle job skončil po 15 minutách jako "cancelled" s nula kroky.
+# Hlídač visel na tom, co měl hlídat, a neodešlo nic. Zprávy proto posílá
+# dispatcher na VPS2 (/root/political/senate_dispatch.py), který běží každých
+# 10 minut mimo GitHub a stav běhů si čte přes API.
 #
-#   2. KÓD — spadl skutečný krok (scraper, pip, playwright).
-#      → žádný rerun, jen zpráva na Telegram
-#
-# Workflow schválně nepoužívá ŽÁDNOU externí akci, ani actions/checkout:
-# nedostupnost, kvůli které existuje, se projevuje právě tím, že se akce
-# nedají stáhnout. Co si nic nestahuje, to výpadek přežije.
+# Workflow nepoužívá ŽÁDNOU externí akci, ani actions/checkout: jedna z
+# poruch, kvůli kterým existuje, se projevuje právě tím, že se akce nedají
+# stáhnout.
 
 on:
   workflow_run:
@@ -53,42 +56,13 @@ jobs:
               | select(.name != "Set up job")
               | .name ] | join(", ")')
 
-          # Přehled kroků do zprávy (prázdný = job neudělal vůbec nic).
-          steps_seen=$(printf '%s' "$jobs_json" | jq -r '
-            [ .jobs[].steps[]? | "\(.name)=\(.conclusion // "null")" ] | join(", ")')
-
           if [ -z "$real" ]; then
             echo "kind=infra" >> "$GITHUB_OUTPUT"
-            echo "detail=žádný náš krok nespadl (job skončil dřív, než se rozjel)" >> "$GITHUB_OUTPUT"
+            echo "Žádný náš krok nespadl → výpadek infrastruktury, zkusím rerun."
           else
             echo "kind=code" >> "$GITHUB_OUTPUT"
-            echo "detail=spadlé kroky: $real" >> "$GITHUB_OUTPUT"
+            echo "Spadlé kroky: $real → skutečná chyba, rerun se NEdělá."
           fi
-          echo "steps=${steps_seen:-<žádné kroky nezaznamenány>}" >> "$GITHUB_OUTPUT"
-
-          # Hlásit jen ZAČÁTEK série selhání. Běhy chodí po 10 minutách, takže
-          # několikahodinový výpadek GitHubu by jinak znamenal zprávu každých
-          # 10 minut. Rerun se dělá pokaždé, jen se o něm mlčí.
-          prev=$(gh api "repos/$REPO/actions/workflows/senate.yml/runs?status=completed&per_page=20" \
-                 | jq -r --argjson me "$RUN_ID" '
-                   [ .workflow_runs[] | select(.id != $me) ]
-                   | sort_by(.created_at) | reverse | .[0].conclusion // "none"')
-
-          if [ "$prev" = "success" ] || [ "$prev" = "none" ]; then
-            echo "notify=yes" >> "$GITHUB_OUTPUT"
-          else
-            echo "notify=no" >> "$GITHUB_OUTPUT"
-            echo "Předchozí běh skončil '$prev' → série pokračuje, Telegram se přeskočí."
-          fi
-
-      - name: Zjisti stav GitHub Actions
-        id: ghstatus
-        continue-on-error: true
-        run: |
-          set -uo pipefail
-          s=$(curl -sS --max-time 20 https://www.githubstatus.com/api/v2/summary.json \
-              | jq -r '[.components[] | select(.name=="Actions") | .status] | first // "unknown"')
-          echo "actions=${s:-unknown}" >> "$GITHUB_OUTPUT"
 
       # Během probíhajícího výpadku je okamžitý rerun skoro jistě k ničemu —
       # chvíli počkat výrazně zvedá šanci, že projde napoprvé.
@@ -97,7 +71,6 @@ jobs:
         run: sleep 120
 
       - name: Spusť běh znovu
-        id: rerun
         if: steps.triage.outputs.kind == 'infra'
         continue-on-error: true
         env:
@@ -107,52 +80,8 @@ jobs:
         run: |
           set -uo pipefail
           if gh api -X POST "repos/$REPO/actions/runs/$RUN_ID/rerun-failed-jobs"; then
-            echo "result=spuštěn rerun (attempt 2)" >> "$GITHUB_OUTPUT"
+            echo "Spuštěn rerun (attempt 2)."
           else
-            echo "result=⚠️ rerun se nepodařilo spustit (Actions API nedostupné)" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Rerun se nepodařilo spustit (Actions API nedostupné)."
+            echo "Nevadí — dispatcher na VPS2 pošle nový běh do 10 minut."
           fi
-
-      # Když triage sama selže, outputs.notify je prázdné → zpráva se pošle.
-      # Mlčí se jen tehdy, když se prokazatelně jedná o pokračování série.
-      - name: Pošli zprávu na Telegram
-        if: always() && steps.triage.outputs.notify != 'no'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          KIND: ${{ steps.triage.outputs.kind }}
-          DETAIL: ${{ steps.triage.outputs.detail }}
-          STEPS: ${{ steps.triage.outputs.steps }}
-          RERUN: ${{ steps.rerun.outputs.result }}
-          GH_ACTIONS_STATUS: ${{ steps.ghstatus.outputs.actions }}
-          RUN_URL: ${{ github.event.workflow_run.html_url }}
-          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
-          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-        run: |
-          set -uo pipefail
-
-          if [ "${KIND:-}" = "infra" ]; then
-            head="🔧 <b>senate-scrape #${RUN_NUMBER}</b> — výpadek infrastruktury"
-            tail=$'Náš kód se nespustil, data se neztrácejí (7denní lookback + dedup na serveru).\n<b>Akce:</b> '"${RERUN:-nespuštěn}"
-          elif [ "${KIND:-}" = "code" ]; then
-            head="🐛 <b>senate-scrape #${RUN_NUMBER}</b> — spadl scraper"
-            tail="Tohle je skutečná chyba, rerun schválně NEproběhl. Potřebuje ruční zásah."
-          else
-            head="❓ <b>senate-scrape #${RUN_NUMBER}</b> — triage selhala"
-            tail="Nepodařilo se zjistit příčinu (nejspíš nedostupné Actions API)."
-          fi
-
-          text=$(printf '%s\n\n<b>Výsledek:</b> %s\n<b>Příčina:</b> %s\n<b>Kroky:</b> %s\n<b>GitHub Actions:</b> %s\n\n%s\n\n<a href="%s">Otevřít běh na GitHubu</a>' \
-            "$head" \
-            "${CONCLUSION:-?}" \
-            "${DETAIL:-neurčena}" \
-            "${STEPS:-neznámé}" \
-            "${GH_ACTIONS_STATUS:-unknown}" \
-            "$tail" \
-            "$RUN_URL")
-
-          curl -sS --max-time 30 -o /dev/null -w 'telegram HTTP %{http_code}\n' \
-            -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d parse_mode=HTML \
-            -d disable_web_page_preview=true \
-            --data-urlencode text="${text}"
