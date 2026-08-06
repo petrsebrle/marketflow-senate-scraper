@@ -66,6 +66,21 @@ jobs:
           fi
           echo "steps=${steps_seen:-<žádné kroky nezaznamenány>}" >> "$GITHUB_OUTPUT"
 
+          # Hlásit jen ZAČÁTEK série selhání. Běhy chodí po 10 minutách, takže
+          # několikahodinový výpadek GitHubu by jinak znamenal zprávu každých
+          # 10 minut. Rerun se dělá pokaždé, jen se o něm mlčí.
+          prev=$(gh api "repos/$REPO/actions/workflows/senate.yml/runs?status=completed&per_page=20" \
+                 | jq -r --argjson me "$RUN_ID" '
+                   [ .workflow_runs[] | select(.id != $me) ]
+                   | sort_by(.created_at) | reverse | .[0].conclusion // "none"')
+
+          if [ "$prev" = "success" ] || [ "$prev" = "none" ]; then
+            echo "notify=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "notify=no" >> "$GITHUB_OUTPUT"
+            echo "Předchozí běh skončil '$prev' → série pokračuje, Telegram se přeskočí."
+          fi
+
       - name: Zjisti stav GitHub Actions
         id: ghstatus
         continue-on-error: true
@@ -97,8 +112,10 @@ jobs:
             echo "result=⚠️ rerun se nepodařilo spustit (Actions API nedostupné)" >> "$GITHUB_OUTPUT"
           fi
 
+      # Když triage sama selže, outputs.notify je prázdné → zpráva se pošle.
+      # Mlčí se jen tehdy, když se prokazatelně jedná o pokračování série.
       - name: Pošli zprávu na Telegram
-        if: always()
+        if: always() && steps.triage.outputs.notify != 'no'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
