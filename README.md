@@ -1,8 +1,18 @@
 # Senate EFD Scraper (GitHub Actions)
 
-Scheduled scraper for U.S. Senate Periodic Transaction Reports (PTRs).
-Runs every 15 minutes on a GitHub Actions runner (US Azure IP) and POSTs
-new filings to the MarketFlow political-monitor ingest endpoint.
+Scraper for U.S. Senate Periodic Transaction Reports (PTRs). Runs on a
+GitHub Actions runner (US Azure IP) and POSTs new filings to the MarketFlow
+political-monitor ingest endpoint.
+
+**Cadence is driven from our own server, not by the cron in this workflow.**
+A systemd timer on VPS2 (`senate-dispatch.timer`) calls the
+`workflow_dispatch` API every 10 minutes. The reason: since ~February 2026
+GitHub drops the vast majority of scheduled events — measured on this very
+workflow over 82 days, a `*/10` cron produced 6.5 % of its runs, with a
+median gap of 100 minutes and never once a gap under 44. GitHub has
+acknowledged it as an upstream regression with no fix date. Dispatched runs
+start in the same second as the API call. The `schedule:` trigger is kept
+only as a fallback for when VPS2 is unavailable.
 
 Senate EFD blocks requests from many hosting providers via Akamai WAF, so
 the scraper cannot run from our server. GitHub-hosted runners use rotating
@@ -18,12 +28,12 @@ US-based IPs that the Senate site accepts.
    - `INGEST_TOKEN` — copy from `/root/political/political.env` (`INGEST_TOKEN=`)
 4. Enable Actions in the repo (Settings → Actions → Allow all actions).
 5. Manually trigger once via the Actions tab → "senate-scrape" → "Run workflow"
-   to verify before the cron starts.
+   to verify before the dispatcher takes over.
 
 ## How it works
 
 ```
-GitHub Actions cron (US IP)
+GitHub Actions runner (US IP)
   ├─ chromium via Playwright → efdsearch.senate.gov/search/
   ├─ accept agreement, filter PTRs, list filings
   ├─ for each NEW filing (DocID not in our DB):
@@ -39,8 +49,8 @@ and skips them.
 ## Cost
 
 - Public repo on free tier: **unlimited minutes**
-- Estimated runtime per cron: 1–2 min
-- 4 runs/hour × 24 h × 30 days × 1.5 min ≈ 4 320 min/month (free)
+- Estimated runtime per run: 1–2 min
+- 6 runs/hour × 24 h × 30 days × 1.5 min ≈ 6 480 min/month (free)
 
 ## Local debug
 
@@ -60,5 +70,5 @@ GitHub runner instead, or run from a US location for local testing.
 ## Manual backfill
 
 Use the `workflow_dispatch` trigger and set `lookback_days` to e.g. `30`
-for a backfill of the past month. Default cron uses 7 days to keep each run
+for a backfill of the past month. Dispatched runs use 7 days to keep each run
 fast.
