@@ -48,30 +48,45 @@ jobs:
 
           jobs_json=$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100")
 
-          # Kroky, které fakt spadly. "Set up job" generuje runner sám
-          # a jeho selhání znamená právě to, že se náš kód nespustil.
+          # Kroky, které fakt spadly. Dvě jména se nepočítají:
+          #  - "Set up job" generuje runner sám a jeho selhání znamená právě
+          #    to, že se náš kód vůbec nespustil;
+          #  - krok s WAF hlásí, že Akamai odmítl IP tohohle runneru — taky
+          #    to není chyba kódu a rerun (= jiná IP) je přesně ten lék.
+          #    Jméno musí sedět s .github/workflows/senate.yml.
           real=$(printf '%s' "$jobs_json" | jq -r '
             [ .jobs[].steps[]?
               | select(.conclusion == "failure")
               | select(.name != "Set up job")
+              | select(.name != "Blocked by Senate EFD WAF (retry-worthy)")
               | .name ] | join(", ")')
 
-          if [ -z "$real" ]; then
-            echo "kind=infra" >> "$GITHUB_OUTPUT"
-            echo "Žádný náš krok nespadl → výpadek infrastruktury, zkusím rerun."
-          else
+          waf=$(printf '%s' "$jobs_json" | jq -r '
+            [ .jobs[].steps[]?
+              | select(.conclusion == "failure")
+              | select(.name == "Blocked by Senate EFD WAF (retry-worthy)") ]
+            | length')
+
+          if [ -n "$real" ]; then
             echo "kind=code" >> "$GITHUB_OUTPUT"
             echo "Spadlé kroky: $real → skutečná chyba, rerun se NEdělá."
+          elif [ "$waf" -gt 0 ]; then
+            echo "kind=waf" >> "$GITHUB_OUTPUT"
+            echo "Senate EFD odmítl IP runneru → rerun (dostane jinou IP)."
+          else
+            echo "kind=infra" >> "$GITHUB_OUTPUT"
+            echo "Žádný náš krok nespadl → výpadek infrastruktury, zkusím rerun."
           fi
 
       # Během probíhajícího výpadku je okamžitý rerun skoro jistě k ničemu —
-      # chvíli počkat výrazně zvedá šanci, že projde napoprvé.
+      # chvíli počkat výrazně zvedá šanci, že projde napoprvé. U WAF se
+      # nečeká: nový runner má jinou IP hned.
       - name: Počkej, než se to usadí
         if: steps.triage.outputs.kind == 'infra'
         run: sleep 120
 
       - name: Spusť běh znovu
-        if: steps.triage.outputs.kind == 'infra'
+        if: steps.triage.outputs.kind == 'infra' || steps.triage.outputs.kind == 'waf'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

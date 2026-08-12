@@ -56,9 +56,29 @@ jobs:
         run: playwright install-deps chromium
 
       - name: Run scraper
+        id: scrape
         env:
           INGEST_URL: ${{ secrets.INGEST_URL }}
           INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
           LOOKBACK_DAYS: ${{ inputs.lookback_days || '7' }}
           HEADLESS: "true"
-        run: python scraper.py
+        run: |
+          set +e
+          python scraper.py
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          # 75 = Akamai odmítl IP tohohle runneru. Neselže se tady, ať se
+          # dostaneme na krok níž, jehož jméno rozliší tuhle situaci od
+          # skutečné chyby scraperu.
+          if [ "$code" -ne 0 ] && [ "$code" -ne 75 ]; then
+            exit "$code"
+          fi
+
+      # Blokace je vázaná na IP runneru, takže lékem je běh na jiném runneru.
+      # ⚠️ Jméno kroku čte triage v retry-on-infra-failure.yml — když ho
+      # změníš tady, změň ho i tam, jinak se rerun přestane dělat.
+      - name: Blocked by Senate EFD WAF (retry-worthy)
+        if: steps.scrape.outputs.code == '75'
+        run: |
+          echo "::warning::Senate EFD (Akamai) odmítl IP tohoto runneru — rerun dostane jinou."
+          exit 1

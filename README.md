@@ -5,14 +5,14 @@ GitHub Actions runner (US Azure IP) and POSTs new filings to the MarketFlow
 political-monitor ingest endpoint.
 
 **Cadence is driven from our own server, not by the cron in this workflow.**
-A systemd timer on VPS2 (`senate-dispatch.timer`) calls the
+A systemd timer on VPS (`senate-dispatch.timer`) calls the
 `workflow_dispatch` API every 10 minutes. The reason: since ~February 2026
 GitHub drops the vast majority of scheduled events — measured on this very
 workflow over 82 days, a `*/10` cron produced 6.5 % of its runs, with a
 median gap of 100 minutes and never once a gap under 44. GitHub has
 acknowledged it as an upstream regression with no fix date. Dispatched runs
 start in the same second as the API call. The `schedule:` trigger is kept
-only as a fallback for when VPS2 is unavailable.
+only as a fallback for when VPS is unavailable.
 
 Senate EFD blocks requests from many hosting providers via Akamai WAF, so
 the scraper cannot run from our server. GitHub-hosted runners use rotating

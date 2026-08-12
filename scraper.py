@@ -37,6 +37,24 @@ from playwright.sync_api import (
 BASE_URL = "https://efdsearch.senate.gov/search/"
 TIMEOUT = 20_000  # ms
 
+# Vstupní stránka (goto + souhlas) je jediné místo, kde nás Senate EFD občas
+# nechá viset: buď se `goto` nedočká odpovědi (pomalá síť), nebo se stránka
+# načte, ale bez checkboxu — to je Akamai. Ostatní kroky už běží v rozjeté
+# relaci a takhle nepadají, proto se ošetření týká jen sem.
+NAV_TIMEOUT = int(os.environ.get("NAV_TIMEOUT_MS", "45000"))  # ms
+NAV_ATTEMPTS = int(os.environ.get("NAV_ATTEMPTS", "4"))
+SEARCH_FORM_SEL = "input[id='reportTypes'][value='11']"
+
+# Akamai blokuje podle IP runneru, takže opakování ve stejném běhu nemá smysl —
+# smysl má jedině rerun, který dostane jiný runner. Tímhle kódem to workflow
+# pozná (viz .github/workflows/senate.yml a retry-on-infra-failure.yml).
+# 75 = EX_TEMPFAIL ze sysexits.h.
+EXIT_BLOCKED = 75
+
+
+class BlockedByWaf(RuntimeError):
+    """Akamai před Senate EFD odmítl tenhle runner."""
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -110,20 +128,79 @@ def setup(pw: Playwright):
     return browser, ctx, page
 
 
-def accept_agreement(page: Page) -> None:
-    """Click the agreement checkbox; the page auto-submits and reloads with the
-    search form. We can't verify post-state of the original element because the
-    DOM gets replaced, so we use click() (no verification) and wait for a
-    next-page selector instead of networkidle.
+def _block_marker(page: Page) -> str | None:
+    """Rozliš 'stránka se nestihla načíst' od 'Akamai nás odmítl'.
+
+    Blok vypadá jako normálně načtená stránka (HTTP 200, `domcontentloaded`
+    projde) — jen místo formuláře nese titulek "Access Denied" a Reference #
+    z errors.edgesuite.net. Bez téhle detekce se to projeví až jako timeout
+    čekání na checkbox, což vypadá na chybu scraperu, i když jde o blokaci IP.
     """
-    log.info("Navigating to %s", BASE_URL)
-    page.goto(BASE_URL, wait_until="domcontentloaded")
-    cb = page.locator("#agree_statement")
-    cb.wait_for(state="visible", timeout=TIMEOUT)
-    cb.click()
+    try:
+        head = (page.content() or "")[:4000].lower()
+    except Exception:
+        return None
+    for marker in ("access denied", "errors.edgesuite.net", "request unsuccessful",
+                   "pardon our interruption", "unusual traffic"):
+        if marker in head:
+            return marker
+    return None
+
+
+def _try_accept_agreement(page: Page) -> None:
+    """Jeden pokus: načti vstupní stránku a odklikni souhlas.
+
+    Po odkliknutí se stránka sama odešle a přenačte s vyhledávacím formulářem;
+    stav původního prvku ověřit nejde (DOM se vymění), takže se čeká na
+    selektor té další stránky, ne na networkidle.
+
+    Souhlas si server pamatuje v session cookie — při opakovaném pokusu už
+    checkbox nemusí existovat a rovnou přistaneme na formuláři. Proto se čeká
+    na *kterýkoli* z obou selektorů, ne natvrdo na checkbox.
+    """
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+
+    marker = _block_marker(page)
+    if marker:
+        raise BlockedByWaf(marker)
+
+    page.wait_for_selector(f"#agree_statement, {SEARCH_FORM_SEL}", timeout=NAV_TIMEOUT)
+
+    if page.locator(SEARCH_FORM_SEL).count():
+        log.info("Souhlas už platí ze session, formulář je rovnou k dispozici")
+        return
+
+    page.locator("#agree_statement").click()
     log.info("Clicked agreement; waiting for search form")
-    page.wait_for_selector("input[id='reportTypes'][value='11']", timeout=TIMEOUT)
+    page.wait_for_selector(SEARCH_FORM_SEL, timeout=NAV_TIMEOUT)
     log.info("Search form loaded")
+
+
+def accept_agreement(page: Page) -> None:
+    """Vstupní stránka s několika pokusy — viz komentář u NAV_ATTEMPTS."""
+    last_err: Exception | None = None
+    for attempt in range(1, NAV_ATTEMPTS + 1):
+        log.info("Navigating to %s (pokus %d/%d)", BASE_URL, attempt, NAV_ATTEMPTS)
+        try:
+            _try_accept_agreement(page)
+            return
+        except PWTimeout as e:
+            last_err = e
+            marker = _block_marker(page)
+            if marker:
+                # Blok se může projevit i takhle (stránka se přepne až po goto).
+                raise BlockedByWaf(marker) from e
+            log.warning(
+                "Vstupní stránka nenaběhla (pokus %d/%d): %s",
+                attempt, NAV_ATTEMPTS, str(e).splitlines()[0],
+            )
+            if attempt < NAV_ATTEMPTS:
+                delay = 5 * 2 ** (attempt - 1)  # 5, 10, 20 s
+                log.info("Zkusím to znovu za %d s", delay)
+                time.sleep(delay)
+
+    log.error("Vstupní stránka nenaběhla ani na %d. pokus, končím", NAV_ATTEMPTS)
+    raise last_err  # type: ignore[misc]
 
 
 def fill_search(page: Page, lookback_days: int) -> None:
@@ -410,15 +487,25 @@ def main() -> int:
     known = fetch_known_doc_ids()
     log.info("Server reports %d known Senate DocIDs", len(known))
 
+    new_filings: list[dict] = []
+
     with sync_playwright() as pw:
         browser, ctx, page = setup(pw)
         try:
-            accept_agreement(page)
+            try:
+                accept_agreement(page)
+            except BlockedByWaf as e:
+                log.error(
+                    "Senate EFD odmítl tenhle runner (Akamai, značka %r). "
+                    "Blokuje se podle IP, takže dotahovat běh nemá smysl — "
+                    "končím kódem %d, ať workflow zkusí jiný runner.",
+                    str(e), EXIT_BLOCKED,
+                )
+                return EXIT_BLOCKED
             fill_search(page, lookback_days=lookback)
             metas = collect_report_urls(page)
             log.info("Filings to consider: %d", len(metas))
 
-            new_filings: list[dict] = []
             for m in metas:
                 did = doc_id_from_url(m["url"])
                 if did in known:
