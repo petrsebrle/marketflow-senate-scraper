@@ -25,7 +25,9 @@ US-based IPs that the Senate site accepts.
 2. Push the contents of this directory to the repo's root.
 3. Add two repository secrets (Settings → Secrets and variables → Actions):
    - `INGEST_URL` — `https://marketflow.cz/api/political/ingest`
-   - `INGEST_TOKEN` — copy from `/root/political/political.env` (`INGEST_TOKEN=`)
+   - `INGEST_TOKEN` — stored in the encrypted systemd credential `politicalenv`
+     on the VPS (the plaintext file was removed on 2026-08-07); a copy lives in the
+     operator's secret store.
 4. Enable Actions in the repo (Settings → Actions → Allow all actions).
 5. Manually trigger once via the Actions tab → "senate-scrape" → "Run workflow"
    to verify before the dispatcher takes over.
