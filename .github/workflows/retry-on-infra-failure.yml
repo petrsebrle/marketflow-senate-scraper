@@ -10,7 +10,7 @@ name: senate-scrape-retry
 # ukázalo, proč to nefunguje: při výpadku se toho dne nedal přidělit runner,
 # takže i tenhle job skončil po 15 minutách jako "cancelled" s nula kroky.
 # Hlídač visel na tom, co měl hlídat, a neodešlo nic. Zprávy proto posílá
-# dispatcher na VPS2 (/root/political/senate_dispatch.py), který běží každých
+# dispatcher na VPS (/root/political/senate_dispatch.py), který běží každých
 # 10 minut mimo GitHub a stav běhů si čte přes API.
 #
 # Workflow nepoužívá ŽÁDNOU externí akci, ani actions/checkout: jedna z
@@ -98,5 +98,5 @@ jobs:
             echo "Spuštěn rerun (attempt 2)."
           else
             echo "⚠️ Rerun se nepodařilo spustit (Actions API nedostupné)."
-            echo "Nevadí — dispatcher na VPS2 pošle nový běh do 10 minut."
+            echo "Nevadí — dispatcher na VPS pošle nový běh do 10 minut."
           fi
