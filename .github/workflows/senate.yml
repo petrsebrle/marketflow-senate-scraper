@@ -20,7 +20,9 @@ concurrency:
 
 jobs:
   scrape:
-    runs-on: ubuntu-latest
+    # Pevná verze, ne ubuntu-latest: od 2026-10-19 přejde latest na Ubuntu 26
+    # a `playwright install-deps` (playwright 1.49) zná balíčky jen do 24.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       # Opt into Node.js 24 ahead of GitHub's June 2026 forced switch.
