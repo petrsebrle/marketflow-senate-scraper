@@ -11,8 +11,14 @@ GitHub drops the vast majority of scheduled events — measured on this very
 workflow over 82 days, a `*/10` cron produced 6.5 % of its runs, with a
 median gap of 100 minutes and never once a gap under 44. GitHub has
 acknowledged it as an upstream regression with no fix date. Dispatched runs
-start in the same second as the API call. The `schedule:` trigger is kept
-only as a fallback for when VPS is unavailable.
+start in the same second as the API call. The `schedule:` fallback was
+removed on 2026-10-25 (it mostly produced failure e-mails during outages).
+
+**Since 2026-10-23 Senate EFD (Akamai) rejects every GitHub runner** right
+after the agreement step, regardless of browser (Chromium, Google Chrome,
+Firefox, WebKit, headless or headed — tested 2026-10-25 on branch `probe`).
+`senate-dispatch.timer` is stopped; `senate-probe.timer` on VPS fires one
+trial run every two days and reports the result to Telegram.
 
 Senate EFD blocks requests from many hosting providers via Akamai WAF, so
 the scraper cannot run from our server. GitHub-hosted runners use rotating
