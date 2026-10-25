@@ -16,7 +16,7 @@ removed on 2026-10-25 (it mostly produced failure e-mails during outages).
 
 **Since 2026-10-23 Senate EFD (Akamai) rejects every GitHub runner** right
 after the agreement step, regardless of browser (Chromium, Google Chrome,
-Firefox, WebKit, headless or headed — tested 2026-10-25 on branch `probe`).
+Firefox, WebKit, headless or headed — tested 2026-10-25 on a since-deleted `probe` branch).
 `senate-dispatch.timer` is stopped; `senate-probe.timer` on VPS fires one
 trial run every two days and reports the result to Telegram.
 
