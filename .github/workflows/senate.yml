@@ -1,9 +1,9 @@
 name: senate-scrape
 
 on:
-  schedule:
-    # Every 10 minutes. GitHub may delay during high load; treat as best-effort.
-    - cron: "*/10 * * * *"
+  # Bez `schedule`: kadenci řídí senate-dispatch.timer na VPS (workflow_dispatch
+  # á 10 min). Záložní cron GitHub z ~93 % zahazoval a při výpadku jen chodily
+  # maily o selhání — odebrán 2026-10-25.
   workflow_dispatch:
     inputs:
       lookback_days:
