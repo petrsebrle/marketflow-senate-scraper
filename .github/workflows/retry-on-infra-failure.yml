@@ -45,6 +45,7 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         run: |
           set -euo pipefail
 
@@ -69,7 +70,19 @@ jobs:
               | select(.name == "Blocked by Senate EFD WAF (retry-worthy)") ]
             | length')
 
-          if [ -n "$real" ]; then
+          # Zrušený běh, ve kterém už proběhl některý náš krok, zrušil člověk
+          # (nebo timeout jobu) — rerun by jen znovu spustil to, co někdo
+          # zastavil (2026-11-11 tak ožily dva ručně zrušené testy). Zrušení
+          # kvůli výpadku GitHubu má nula kroků a opakuje se dál.
+          ran=$(printf '%s' "$jobs_json" | jq -r '
+            [ .jobs[].steps[]?
+              | select(.name != "Set up job")
+              | select(.conclusion == "success") ] | length')
+
+          if [ "$CONCLUSION" = "cancelled" ] && [ "$ran" -gt 0 ]; then
+            echo "kind=cancelled" >> "$GITHUB_OUTPUT"
+            echo "Běh zrušen po spuštění našich kroků → ručně, rerun se NEdělá."
+          elif [ -n "$real" ]; then
             echo "kind=code" >> "$GITHUB_OUTPUT"
             echo "Spadlé kroky: $real → skutečná chyba, rerun se NEdělá."
           elif [ "$waf" -gt 0 ]; then
