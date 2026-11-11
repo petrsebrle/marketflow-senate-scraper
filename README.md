@@ -6,7 +6,7 @@ political-monitor ingest endpoint.
 
 **Cadence is driven from our own server, not by the cron in this workflow.**
 A systemd timer on VPS (`senate-dispatch.timer`) calls the
-`workflow_dispatch` API every 10 minutes. The reason: since ~February 2026
+`workflow_dispatch` API every 30 minutes (every 10 until 2026-11-11; each run gets up to 3 attempts against per-IP blocks). The reason: since ~February 2026
 GitHub drops the vast majority of scheduled events — measured on this very
 workflow over 82 days, a `*/10` cron produced 6.5 % of its runs, with a
 median gap of 100 minutes and never once a gap under 44. GitHub has

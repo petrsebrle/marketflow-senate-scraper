@@ -3,7 +3,8 @@ name: senate-scrape-retry
 # Když "senate-scrape" spadne na infrastruktuře (job umře dřív, než se spustí
 # jediný náš krok — typicky "Failed to resolve action download info" v
 # "Set up job", nebo ho GitHub uprostřed výpadku zruší), zkusí ho jednou
-# spustit znovu. Spadl-li skutečný krok, je to chyba scraperu a rerun se
+# spustit znovu (nejvýš dvakrát, tj. 3 pokusy — od 2026-11-11, kdy dva pokusy
+# po sobě nestačily na zablokované IP). Spadl-li skutečný krok, je to chyba scraperu a rerun se
 # schválně nedělá.
 #
 # NOTIFIKACE TADY NEJSOU, a je to schválně. Původně tu byly a 6. 8. 2026 se
@@ -11,7 +12,7 @@ name: senate-scrape-retry
 # takže i tenhle job skončil po 15 minutách jako "cancelled" s nula kroky.
 # Hlídač visel na tom, co měl hlídat, a neodešlo nic. Zprávy proto posílá
 # dispatcher na VPS (/root/political/senate_dispatch.py), který běží každých
-# 10 minut mimo GitHub a stav běhů si čte přes API.
+# 30 minut mimo GitHub a stav běhů si čte přes API.
 #
 # Workflow nepoužívá ŽÁDNOU externí akci, ani actions/checkout: jedna z
 # poruch, kvůli kterým existuje, se projevuje právě tím, že se akce nedají
@@ -27,12 +28,13 @@ permissions:
 
 jobs:
   triage:
-    # run_attempt == 1 je pojistka proti smyčce: rerun vyrobí attempt 2,
-    # jehož dokončení sem přijde znovu — a tady se už zastaví.
+    # run_attempt < 3 je pojistka proti smyčce: rerun vyrobí další attempt,
+    # jehož dokončení sem přijde znovu — a u třetího se tady zastaví.
+    # Musí sedět s MAX_ATTEMPTS v /root/political/senate_dispatch.py.
     if: >-
       github.event.workflow_run.conclusion != 'success'
       && github.event.workflow_run.conclusion != 'skipped'
-      && github.event.workflow_run.run_attempt == 1
+      && github.event.workflow_run.run_attempt < 3
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -95,8 +97,8 @@ jobs:
         run: |
           set -uo pipefail
           if gh api -X POST "repos/$REPO/actions/runs/$RUN_ID/rerun-failed-jobs"; then
-            echo "Spuštěn rerun (attempt 2)."
+            echo "Spuštěn rerun (attempt $(( ${{ github.event.workflow_run.run_attempt }} + 1 )))."
           else
             echo "⚠️ Rerun se nepodařilo spustit (Actions API nedostupné)."
-            echo "Nevadí — dispatcher na VPS pošle nový běh do 10 minut."
+            echo "Nevadí — dispatcher na VPS pošle nový běh do 30 minut."
           fi

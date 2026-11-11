@@ -2,7 +2,7 @@ name: senate-scrape
 
 on:
   # Bez `schedule`: kadenci řídí senate-dispatch.timer na VPS (workflow_dispatch
-  # á 10 min). Záložní cron GitHub z ~93 % zahazoval a při výpadku jen chodily
+  # á 30 min, do 2026-11-11 á 10 min). Záložní cron GitHub z ~93 % zahazoval a při výpadku jen chodily
   # maily o selhání — odebrán 2026-10-25.
   workflow_dispatch:
     inputs:
