@@ -49,25 +49,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Systémové knihovny přes apt. 2026-11-11 runnery přes hodinu nedokázaly
-      # přeložit `azure.archive.ubuntu.com` (zrcadlo Ubuntu v Azure) a krok
-      # padal po ~8 min timeoutů — triáž to bere jako chybu kódu, takže se ani
-      # neopakovalo. Zrcadlo nebere apt ze sources.list, ale ze seznamu
-      # /etc/apt/apt-mirrors.txt (`mirror+file:`); když se azure nepřeloží,
-      # nahradí se seznam hlavním archive.ubuntu.com (nese i noble-security).
-      - name: Install Playwright system deps
+      # Systémové knihovny přes apt — NEPOVINNÉ. 2026-11-11 se na runnerech
+      # (i jinde) přes hodinu nepřekládal `ubuntu.com` (DNS Canonicalu; jiné
+      # zrcadlo Ubuntu proto nepomůže) a apt visel ~8 min na timeoutech; triáž
+      # to brala jako chybu kódu a běh se ani neopakoval. Image ubuntu-24.04
+      # má knihovny pro Chromium předinstalované (je v něm Google Chrome), takže
+      # se bez nich obejdeme. Kdyby přece nějaká chyběla, spadne až
+      # "Run scraper" a ohlásí se to jako chyba scraperu.
+      - name: Install Playwright system deps (best effort)
         run: |
-          use_archive() {
-            echo "::warning::$1 — apt jede přes archive.ubuntu.com"
-            echo "http://archive.ubuntu.com/ubuntu/" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          }
-          getent hosts azure.archive.ubuntu.com >/dev/null || use_archive "azure.archive.ubuntu.com se nepřeložil"
-          for i in 1 2 3; do
-            playwright install-deps chromium && exit 0
-            use_archive "install-deps pokus $i selhal"
-            sleep 10
-          done
-          exit 1
+          if ! getent hosts archive.ubuntu.com >/dev/null && ! getent hosts azure.archive.ubuntu.com >/dev/null; then
+            echo "::warning::Zrcadla Ubuntu se nepřekládají — install-deps přeskočen, jedu s knihovnami z image."
+            exit 0
+          fi
+          timeout 300 playwright install-deps chromium \
+            || echo "::warning::install-deps selhal nebo vypršel — jedu s knihovnami z image."
 
       - name: Install Playwright chromium (cache miss)
         if: steps.playwright-cache.outputs.cache-hit != 'true'
