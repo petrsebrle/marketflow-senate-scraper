@@ -49,17 +49,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Systémové knihovny přes apt. 2026-11-11 runnery hodinu nedokázaly
+      # Systémové knihovny přes apt. 2026-11-11 runnery přes hodinu nedokázaly
       # přeložit `azure.archive.ubuntu.com` (zrcadlo Ubuntu v Azure) a krok
-      # padal — triáž to bere jako chybu kódu, takže se ani neopakovalo.
-      # Proto 3 pokusy a po prvním neúspěchu přepnutí na archive.ubuntu.com.
+      # padal po ~8 min timeoutů — triáž to bere jako chybu kódu, takže se ani
+      # neopakovalo. Zrcadlo nebere apt ze sources.list, ale ze seznamu
+      # /etc/apt/apt-mirrors.txt (`mirror+file:`); když se azure nepřeloží,
+      # nahradí se seznam hlavním archive.ubuntu.com (nese i noble-security).
       - name: Install Playwright system deps
         run: |
+          use_archive() {
+            echo "::warning::$1 — apt jede přes archive.ubuntu.com"
+            echo "http://archive.ubuntu.com/ubuntu/" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          }
+          getent hosts azure.archive.ubuntu.com >/dev/null || use_archive "azure.archive.ubuntu.com se nepřeložil"
           for i in 1 2 3; do
             playwright install-deps chromium && exit 0
-            echo "::warning::install-deps pokus $i selhal — přepínám zrcadlo na archive.ubuntu.com"
-            sudo sed -i 's#azure\.archive\.ubuntu\.com#archive.ubuntu.com#g' \
-              /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+            use_archive "install-deps pokus $i selhal"
             sleep 10
           done
           exit 1
