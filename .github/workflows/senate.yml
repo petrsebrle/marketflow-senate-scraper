@@ -88,6 +88,15 @@ jobs:
             exit "$code"
           fi
 
+      # HTML + screenshot stránky, na které se scraper zasekl (viz _dump_page).
+      - name: Upload diagnostics
+        if: always() && hashFiles('diag/*') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-${{ github.run_id }}-${{ github.run_attempt }}
+          path: diag/
+          retention-days: 14
+
       # Blokace je vázaná na IP runneru, takže lékem je běh na jiném runneru.
       # ⚠️ Jméno kroku čte triage v retry-on-infra-failure.yml — když ho
       # změníš tady, změň ho i tam, jinak se rerun přestane dělat.

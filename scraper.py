@@ -147,6 +147,32 @@ def _block_marker(page: Page) -> str | None:
     return None
 
 
+DIAG_DIR = os.environ.get("DIAG_DIR", "diag")
+
+
+def _dump_page(page: Page, tag: str) -> None:
+    """Zaloguj, co je na stránce, a ulož HTML + screenshot (artefakt běhu).
+
+    Bez toho se neznámá stránka (ani formulář, ani checkbox, ani známá značka
+    bloku) projeví jen jako holý timeout a nedá se zpětně říct, co to bylo.
+    """
+    try:
+        url = page.url
+        title = page.title()
+        text = " ".join((page.inner_text("body", timeout=3000) or "").split())[:500]
+    except Exception as e:  # stránka může být uprostřed navigace
+        log.warning("Diagnostika [%s]: stránku nejde přečíst: %s", tag, e)
+        return
+    log.warning("Diagnostika [%s]: url=%s title=%r text=%r", tag, url, title, text)
+    try:
+        os.makedirs(DIAG_DIR, exist_ok=True)
+        with open(os.path.join(DIAG_DIR, f"{tag}.html"), "w", encoding="utf-8") as f:
+            f.write(page.content())
+        page.screenshot(path=os.path.join(DIAG_DIR, f"{tag}.png"), full_page=True, timeout=10_000)
+    except Exception as e:
+        log.warning("Diagnostika [%s]: uložení selhalo: %s", tag, e)
+
+
 def _try_accept_agreement(page: Page) -> None:
     """Jeden pokus: načti vstupní stránku a odklikni souhlas.
 
@@ -190,6 +216,7 @@ def accept_agreement(page: Page) -> None:
             if marker:
                 # Blok se může projevit i takhle (stránka se přepne až po goto).
                 raise BlockedByWaf(marker) from e
+            _dump_page(page, f"pokus{attempt}")
             log.warning(
                 "Vstupní stránka nenaběhla (pokus %d/%d): %s",
                 attempt, NAV_ATTEMPTS, str(e).splitlines()[0],
