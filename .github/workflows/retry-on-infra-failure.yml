@@ -62,7 +62,14 @@ jobs:
               | select(.conclusion == "failure")
               | select(.name != "Set up job")
               | select(.name != "Blocked by Senate EFD WAF (retry-worthy)")
+              | select(.name != "Senate EFD under maintenance")
               | .name ] | join(", ")')
+
+          maint=$(printf '%s' "$jobs_json" | jq -r '
+            [ .jobs[].steps[]?
+              | select(.conclusion == "failure")
+              | select(.name == "Senate EFD under maintenance") ]
+            | length')
 
           waf=$(printf '%s' "$jobs_json" | jq -r '
             [ .jobs[].steps[]?
@@ -85,6 +92,9 @@ jobs:
           elif [ -n "$real" ]; then
             echo "kind=code" >> "$GITHUB_OUTPUT"
             echo "Spadlé kroky: $real → skutečná chyba, rerun se NEdělá."
+          elif [ "$maint" -gt 0 ]; then
+            echo "kind=maintenance" >> "$GITHUB_OUTPUT"
+            echo "Senate EFD je v údržbě → rerun se NEdělá, zkusí to další dispatch."
           elif [ "$waf" -gt 0 ]; then
             echo "kind=waf" >> "$GITHUB_OUTPUT"
             echo "Senate EFD odmítl IP runneru → rerun (dostane jinou IP)."

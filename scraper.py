@@ -51,9 +51,20 @@ SEARCH_FORM_SEL = "input[id='reportTypes'][value='11']"
 # 75 = EX_TEMPFAIL ze sysexits.h.
 EXIT_BLOCKED = 75
 
+# 76 = Senate EFD je v plánované údržbě ("Site Under Maintenance"). Není to
+# chyba scraperu ani blok runneru — rerun nepomůže, stačí počkat na další
+# dispatch. 2026-11-15 (neděle) to dvakrát za sebou vypadalo jako "spadl
+# scraper": stránka se po souhlasu přepnula na oznámení o údržbě a scraper
+# jen čekal na formulář, který nepřišel.
+EXIT_MAINTENANCE = 76
+
 
 class BlockedByWaf(RuntimeError):
     """Akamai před Senate EFD odmítl tenhle runner."""
+
+
+class SiteMaintenance(RuntimeError):
+    """Senate EFD hlásí údržbu webu."""
 
 logging.basicConfig(
     level=logging.INFO,
@@ -173,6 +184,28 @@ def _dump_page(page: Page, tag: str) -> None:
         log.warning("Diagnostika [%s]: uložení selhalo: %s", tag, e)
 
 
+def _maintenance_marker(page: Page) -> str | None:
+    try:
+        title = (page.title() or "").lower()
+        head = (page.content() or "")[:20000].lower()
+    except Exception:
+        return None
+    for marker in ("site under maintenance", "unavailable due to maintenance"):
+        if marker in title or marker in head:
+            return marker
+    return None
+
+
+def _check_page(page: Page) -> None:
+    """Vyhoď výjimku, pokud je na stránce blok Akamai nebo oznámení o údržbě."""
+    marker = _block_marker(page)
+    if marker:
+        raise BlockedByWaf(marker)
+    marker = _maintenance_marker(page)
+    if marker:
+        raise SiteMaintenance(marker)
+
+
 def _try_accept_agreement(page: Page) -> None:
     """Jeden pokus: načti vstupní stránku a odklikni souhlas.
 
@@ -185,10 +218,7 @@ def _try_accept_agreement(page: Page) -> None:
     na *kterýkoli* z obou selektorů, ne natvrdo na checkbox.
     """
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-
-    marker = _block_marker(page)
-    if marker:
-        raise BlockedByWaf(marker)
+    _check_page(page)
 
     page.wait_for_selector(f"#agree_statement, {SEARCH_FORM_SEL}", timeout=NAV_TIMEOUT)
 
@@ -212,10 +242,9 @@ def accept_agreement(page: Page) -> None:
             return
         except PWTimeout as e:
             last_err = e
-            marker = _block_marker(page)
-            if marker:
-                # Blok se může projevit i takhle (stránka se přepne až po goto).
-                raise BlockedByWaf(marker) from e
+            # Blok i údržba se můžou projevit i takhle (stránka se přepne až
+            # po goto, typicky po odkliknutí souhlasu).
+            _check_page(page)
             _dump_page(page, f"pokus{attempt}")
             log.warning(
                 "Vstupní stránka nenaběhla (pokus %d/%d): %s",
@@ -529,6 +558,13 @@ def main() -> int:
                     str(e), EXIT_BLOCKED,
                 )
                 return EXIT_BLOCKED
+            except SiteMaintenance as e:
+                log.warning(
+                    "Senate EFD je v údržbě (značka %r) — není co stahovat, "
+                    "končím kódem %d; další dispatch to zkusí znovu.",
+                    str(e), EXIT_MAINTENANCE,
+                )
+                return EXIT_MAINTENANCE
             fill_search(page, lookback_days=lookback)
             metas = collect_report_urls(page)
             log.info("Filings to consider: %d", len(metas))

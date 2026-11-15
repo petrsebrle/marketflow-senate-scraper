@@ -84,7 +84,8 @@ jobs:
           # 75 = Akamai odmítl IP tohohle runneru. Neselže se tady, ať se
           # dostaneme na krok níž, jehož jméno rozliší tuhle situaci od
           # skutečné chyby scraperu.
-          if [ "$code" -ne 0 ] && [ "$code" -ne 75 ]; then
+          # 76 = Senate EFD je v údržbě — stejně tak se rozliší krokem níž.
+          if [ "$code" -ne 0 ] && [ "$code" -ne 75 ] && [ "$code" -ne 76 ]; then
             exit "$code"
           fi
 
@@ -104,4 +105,14 @@ jobs:
         if: steps.scrape.outputs.code == '75'
         run: |
           echo "::warning::Senate EFD (Akamai) odmítl IP tohoto runneru — rerun dostane jinou."
+          exit 1
+
+      # Senate EFD hlásí "Site Under Maintenance". Rerun nepomůže (údržba se
+      # týká webu, ne runneru) — triage ho nedělá a hlídač na VPS to nehlásí
+      # jako chybu scraperu. ⚠️ Jméno čte retry-on-infra-failure.yml
+      # i /root/political/senate_dispatch.py na VPS.
+      - name: Senate EFD under maintenance
+        if: steps.scrape.outputs.code == '76'
+        run: |
+          echo "::warning::Senate EFD je v údržbě — zkusí to další dispatch."
           exit 1
