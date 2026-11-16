@@ -108,11 +108,13 @@ jobs:
           exit 1
 
       # Senate EFD hlásí "Site Under Maintenance". Rerun nepomůže (údržba se
-      # týká webu, ne runneru) — triage ho nedělá a hlídač na VPS to nehlásí
-      # jako chybu scraperu. ⚠️ Jméno čte retry-on-infra-failure.yml
-      # i /root/political/senate_dispatch.py na VPS.
+      # týká webu, ne runneru). Krok končí ÚSPĚCHEM (od 2026-11-16): jinak
+      # GitHub posílá e-mail „Run failed“ za každý dispatch (á 30 min, údržba
+      # trvala přes 18 h). Hlídač na VPS pozná údržbu podle toho, že tenhle
+      # krok proběhl (není skipped) a hlásí ji až po 6 h.
+      # ⚠️ Jméno čte /root/political/senate_dispatch.py na VPS
+      # (i retry-on-infra-failure.yml kvůli starším během).
       - name: Senate EFD under maintenance
         if: steps.scrape.outputs.code == '76'
         run: |
           echo "::warning::Senate EFD je v údržbě — zkusí to další dispatch."
-          exit 1
